@@ -24,8 +24,8 @@ def find_k_shortest_bike_routes():
     """
     # --- Configuration ---
     START_ADDRESS = "Urbańczyka 1, Chrzanów, Poland"
-    END_ADDRESS = "Krakowska 95, Libiąż, Poland"
-    K_PATHS = 7  # The number of shortest paths to find
+    END_ADDRESS = "Krzywa 1, Płoki, Poland"
+    K_PATHS = 13  # The number of shortest paths to find
     BUFFER_DISTANCE = 500  # Additional buffer in meters for safety
 
     # --- 1. Configure OSMnx ---
@@ -174,6 +174,7 @@ def find_k_shortest_bike_routes():
 
         # Create first track in our GPX file
         gpx_track = gpxpy.gpx.GPXTrack()
+        gpx_track.name = f"Route {i + 1}" 
         gpx.tracks.append(gpx_track)
 
         # Create first segment in our GPX track
