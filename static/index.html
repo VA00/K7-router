@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>K7-router</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"
+      integrity="sha512-h9FcoyWjHcOcmEVkxOfTLnmZFWIH0iZhZT1H2TbOq55xssQGEJHEaIm+PgoUaZbRvQTNTluNOEfb1ZRy6D3BOw==" crossorigin="anonymous" referrerpolicy="no-referrer">
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --border: #d9dde3; --text: #1b1f24; --muted: #5c6670;
+    --accent: #0b64c0; --hover: #e8eef6; --selected: #d8e6f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15181c; --panel: #1d2127; --border: #343a43; --text: #e6e8eb; --muted: #9aa3ad;
+      --accent: #5aa5ec; --hover: #262c35; --selected: #2b3d55;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #15181c; --panel: #1d2127; --border: #343a43; --text: #e6e8eb; --muted: #9aa3ad;
+    --accent: #5aa5ec; --hover: #262c35; --selected: #2b3d55;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; background: var(--bg); color: var(--text);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #panel { width: 340px; flex: 0 0 340px; display: flex; flex-direction: column;
+           background: var(--panel); border-right: 1px solid var(--border); overflow: hidden; }
+  #map { flex: 1; min-width: 0; }
+  header { padding: 14px 16px 8px; }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+  form { padding: 0 16px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  form label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); }
+  form label.full { grid-column: 1 / -1; }
+  form input { margin-top: 2px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px;
+               background: var(--bg); color: var(--text); font: inherit; }
+  form button { grid-column: 1 / -1; padding: 8px; border: 0; border-radius: 4px; background: var(--accent);
+                color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  form button:disabled { opacity: .6; cursor: progress; }
+  #status { padding: 0 16px 8px; font-size: 12px; color: var(--muted); min-height: 18px; white-space: pre-line; }
+  #status.error { color: #c0392b; }
+  .modes { padding: 0 16px 8px; display: flex; gap: 12px; font-size: 12px; }
+  .modes label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  #routes { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
+  .route { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center;
+           padding: 8px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .route:hover, .route.hover { background: var(--hover); }
+  .route.selected { background: var(--selected); }
+  .route .swatch { width: 14px; height: 14px; border-radius: 3px; }
+  .route .main { display: flex; flex-direction: column; }
+  .route .title { font-weight: 600; }
+  .route .sub { font-size: 12px; color: var(--muted); }
+  .route .delta { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .route .delta.zero { color: var(--muted); font-weight: 400; }
+  .route .actions { grid-column: 2 / -1; display: flex; gap: 10px; font-size: 12px; }
+  .route .actions a { color: var(--accent); text-decoration: none; }
+  .route .actions label { color: var(--muted); display: flex; align-items: center; gap: 4px; cursor: pointer; }
+  footer { padding: 8px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted);
+           display: flex; gap: 12px; flex-wrap: wrap; }
+  footer a { color: var(--accent); text-decoration: none; }
+  @media (max-width: 720px) {
+    body { flex-direction: column; }
+    #panel { width: auto; flex: 0 0 45%; border-right: 0; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<aside id="panel">
+  <header>
+    <h1>K7-router</h1>
+    <p>Strictly ranked bicycle routes. The 2nd route really is 2nd best.</p>
+  </header>
+  <form id="form">
+    <label class="full">Start
+      <input id="start" name="start" required autocomplete="off" value="Urbańczyka 1, Chrzanów, Poland">
+    </label>
+    <label class="full">End
+      <input id="end" name="end" required autocomplete="off" value="Krakowska 95, Libiąż, Poland">
+    </label>
+    <label>Routes (K)
+      <input id="k" name="k" type="number" min="1" max="50" value="7">
+    </label>
+    <label>Buffer (m)
+      <input id="buffer" name="buffer" type="number" min="0" max="5000" step="100" value="500">
+    </label>
+    <button id="go" type="submit">Find routes</button>
+  </form>
+  <div id="status">Enter two addresses and press Find routes.</div>
+  <div class="modes">
+    <label><input type="radio" name="mode" value="all" checked> All routes</label>
+    <label><input type="radio" name="mode" value="diff"> Differences vs. #1</label>
+  </div>
+  <div id="routes"></div>
+  <footer>
+    <a id="gpx-all" href="/api/gpx/all" hidden>Download all as GPX</a>
+    <a id="osm-link" href="https://www.openstreetmap.org" target="_blank" rel="noopener">View area on osm.org</a>
+    <a id="id-link" href="https://www.openstreetmap.org/edit" target="_blank" rel="noopener">Edit area in iD</a>
+  </footer>
+</aside>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"
+        integrity="sha512-puJW3E/qXDqYp9IfhAI54BJEaWIfloJ7JWs7OeD5i6ruC9JZL1gERT1wjtwXFlh7CjE7ZJ+/vcRZRkIYIb6p4g==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+(function () {
+  'use strict';
+
+  var COLORS = ['#1f77b4', '#d62728', '#2ca02c', '#ff7f0e', '#9467bd', '#8c564b', '#e377c2',
+                '#17becf', '#bcbd22', '#7f7f7f', '#aec7e8', '#ff9896', '#98df8a', '#ffbb78'];
+  var SHARED_COLOR = '#6b7280';
+
+  var map = L.map('map', { zoomControl: true }).setView([50.11, 19.35], 12);
+  var osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+  var cyclosm = L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', {
+    maxZoom: 20,
+    attribution: '<a href="https://www.cyclosm.org">CyclOSM</a> | &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  });
+  L.control.layers({ 'OpenStreetMap': osm, 'CyclOSM': cyclosm }, null, { position: 'topright' }).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+
+  var routeLayer = L.layerGroup().addTo(map);
+  var markerLayer = L.layerGroup().addTo(map);
+
+  var form = document.getElementById('form');
+  var statusEl = document.getElementById('status');
+  var routesEl = document.getElementById('routes');
+  var goBtn = document.getElementById('go');
+  var gpxAll = document.getElementById('gpx-all');
+
+  var result = null;        // last API response
+  var lines = {};           // rank -> array of L.Polyline (main line + diff segments)
+  var hidden = {};          // rank -> true if hidden by checkbox
+  var selected = null;      // selected rank
+  var hovered = null;       // hovered rank
+
+  // --- persistence of form values (per-browser convenience only) --------------
+  try {
+    var saved = JSON.parse(localStorage.getItem('k7.form') || 'null');
+    if (saved) ['start', 'end', 'k', 'buffer'].forEach(function (id) {
+      if (saved[id] !== undefined) document.getElementById(id).value = saved[id];
+    });
+  } catch (e) { /* storage unavailable: ignore */ }
+
+  function saveForm() {
+    try {
+      localStorage.setItem('k7.form', JSON.stringify({
+        start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer')
+      }));
+    } catch (e) { /* ignore */ }
+  }
+  function val(id) { return document.getElementById(id).value; }
+
+  // --- osm.org links follow the map view ----------------------------------------
+  function updateOsmLinks() {
+    var c = map.getCenter(), z = map.getZoom();
+    var frag = '#map=' + z + '/' + c.lat.toFixed(5) + '/' + c.lng.toFixed(5);
+    document.getElementById('osm-link').href = 'https://www.openstreetmap.org/' + frag;
+    document.getElementById('id-link').href = 'https://www.openstreetmap.org/edit' + frag;
+  }
+  map.on('moveend', updateOsmLinks);
+  updateOsmLinks();
+
+  // --- rendering -------------------------------------------------------------------
+  function mode() { return document.querySelector('input[name=mode]:checked').value; }
+  document.querySelectorAll('input[name=mode]').forEach(function (r) { r.addEventListener('change', draw); });
+
+  function fmtKm(m) { return (m / 1000).toFixed(3) + ' km'; }
+  function fmtDelta(m) { return (m >= 0 ? '+' : '') + Math.round(m) + ' m'; }
+
+  function styleFor(rank, isDiff) {
+    var focus = hovered !== null ? hovered : selected;
+    var dim = focus !== null && focus !== rank;
+    var color = COLORS[(rank - 1) % COLORS.length];
+    if (mode() === 'diff' && !isDiff) {
+      return { color: SHARED_COLOR, weight: focus === rank ? 6 : 4, opacity: dim ? 0.25 : 0.7 };
+    }
+    return { color: color, weight: focus === rank ? 8 : 4, opacity: dim ? 0.25 : 0.9 };
+  }
+
+  function draw() {
+    routeLayer.clearLayers();
+    lines = {};
+    if (!result) return;
+    var m = mode();
+    // Draw worst-ranked first so the best route ends up on top.
+    result.routes.slice().reverse().forEach(function (r) {
+      if (hidden[r.rank]) return;
+      var group = [];
+      if (m === 'all' || r.rank === 1) {
+        // in "diff" mode route #1 is the colored baseline; the others are grey except where they differ
+        group.push(L.polyline(r.coords, styleFor(r.rank, true)));
+      } else {
+        // shared skeleton (thin grey) + colored differences
+        group.push(L.polyline(r.coords, styleFor(r.rank, false)));
+        r.diff.forEach(function (seg) { group.push(L.polyline(seg, styleFor(r.rank, true))); });
+      }
+      group.forEach(function (pl) {
+        pl.on('mouseover', function () { setHover(r.rank); });
+        pl.on('mouseout', function () { setHover(null); });
+        pl.on('click', function () { select(r.rank, false); });
+        pl.bindTooltip('#' + r.rank + ' · ' + fmtKm(r.length_m) + (r.rank > 1 ? ' (' + fmtDelta(r.delta_m) + ')' : ''),
+                       { sticky: true });
+        pl.addTo(routeLayer);
+      });
+      lines[r.rank] = group;
+    });
+    // focused route on top
+    var focus = hovered !== null ? hovered : selected;
+    if (focus !== null && lines[focus]) lines[focus].forEach(function (pl) { pl.bringToFront(); });
+  }
+
+  function restyle() {
+    Object.keys(lines).forEach(function (rank) {
+      rank = +rank;
+      lines[rank].forEach(function (pl, i) {
+        // index 0 is the full route line; indexes >0 are the differing sections (diff mode only)
+        var isDiff = mode() === 'all' || rank === 1 || i > 0;
+        pl.setStyle(styleFor(rank, isDiff));
+      });
+    });
+    var focus = hovered !== null ? hovered : selected;
+    if (focus !== null && lines[focus]) lines[focus].forEach(function (pl) { pl.bringToFront(); });
+  }
+
+  function setHover(rank) {
+    hovered = rank;
+    routesEl.querySelectorAll('.route').forEach(function (el) {
+      el.classList.toggle('hover', +el.dataset.rank === rank);
+    });
+    restyle();
+  }
+
+  function select(rank, zoom) {
+    selected = (selected === rank) ? null : rank;
+    routesEl.querySelectorAll('.route').forEach(function (el) {
+      el.classList.toggle('selected', +el.dataset.rank === selected);
+    });
+    restyle();
+    if (selected !== null && zoom) {
+      var r = result.routes[selected - 1];
+      var target = (r.rank > 1 && r.diff.length) ? L.polyline(r.diff) : L.polyline(r.coords);
+      map.fitBounds(target.getBounds(), { padding: [40, 40], maxZoom: 17 });
+    }
+  }
+
+  function renderList() {
+    routesEl.innerHTML = '';
+    result.routes.forEach(function (r) {
+      var el = document.createElement('div');
+      el.className = 'route';
+      el.dataset.rank = r.rank;
+      var diffLen = r.diff.reduce(function (n, seg) { return n + seg.length; }, 0);
+      el.innerHTML =
+        '<div class="swatch" style="background:' + COLORS[(r.rank - 1) % COLORS.length] + '"></div>' +
+        '<div class="main"><div class="title">Route ' + r.rank + ' · ' + fmtKm(r.length_m) + '</div>' +
+        '<div class="sub">' + (r.rank === 1 ? 'shortest' : r.diff.length + ' differing section' + (r.diff.length === 1 ? '' : 's')) +
+        ' · ' + r.n_nodes + ' nodes</div></div>' +
+        '<div class="delta' + (r.rank === 1 ? ' zero' : '') + '">' + (r.rank === 1 ? '—' : fmtDelta(r.delta_m)) + '</div>' +
+        '<div class="actions"><label><input type="checkbox" ' + (hidden[r.rank] ? '' : 'checked') + '> show</label>' +
+        '<a href="/api/gpx/' + r.rank + '">GPX</a></div>';
+      el.addEventListener('mouseenter', function () { setHover(r.rank); });
+      el.addEventListener('mouseleave', function () { setHover(null); });
+      el.addEventListener('click', function (ev) {
+        if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'A' || ev.target.tagName === 'LABEL') return;
+        select(r.rank, true);
+      });
+      el.querySelector('input[type=checkbox]').addEventListener('change', function (ev) {
+        hidden[r.rank] = !ev.target.checked;
+        draw();
+      });
+      routesEl.appendChild(el);
+    });
+  }
+
+  function renderMarkers() {
+    markerLayer.clearLayers();
+    L.marker([result.start.lat, result.start.lon]).bindTooltip('Start: ' + result.start.address).addTo(markerLayer);
+    L.marker([result.end.lat, result.end.lon]).bindTooltip('End: ' + result.end.address).addTo(markerLayer);
+  }
+
+  // --- search ---------------------------------------------------------------------
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    saveForm();
+    var params = new URLSearchParams({ start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer') });
+    goBtn.disabled = true;
+    statusEl.className = '';
+    statusEl.textContent = 'Geocoding and loading the bicycle network… first run for a new area can take a minute.';
+    fetch('/api/routes?' + params.toString())
+      .then(function (resp) { return resp.json().then(function (data) { return { ok: resp.ok, data: data }; }); })
+      .then(function (r) {
+        goBtn.disabled = false;
+        if (!r.ok) {
+          statusEl.className = 'error';
+          statusEl.textContent = r.data.error || 'Request failed.';
+          return;
+        }
+        result = r.data;
+        hidden = {}; selected = null; hovered = null;
+        var a = result.area, t = result.timings;
+        statusEl.textContent = result.routes.length + ' routes · network ' + a.nodes + ' nodes / ' + a.edges + ' edges' +
+          (a.cached ? ' (cached)' : ' (downloaded)') +
+          '\ngeocode ' + t.geocode_s + ' s · graph ' + t.graph_s + ' s · routing ' + t.routing_s + ' s';
+        gpxAll.hidden = false;
+        renderMarkers();
+        renderList();
+        draw();
+        map.fitBounds(L.polyline(result.routes[0].coords).getBounds(), { padding: [30, 30] });
+      })
+      .catch(function (err) {
+        goBtn.disabled = false;
+        statusEl.className = 'error';
+        statusEl.textContent = 'Could not reach the K7-router server: ' + err;
+      });
+  });
+})();
+</script>
+</body>
+</html>

@@ -39,6 +39,27 @@ pip install osmnx networkx gpxpy
 
 ## Usage
 
+### Web UI (recommended)
+
+```bash
+python K7-server.py
+```
+
+Then open <http://127.0.0.1:8707> in a browser. Type the start and end addresses,
+choose how many routes you want and press *Find routes*. You get:
+
+- a ranked list of routes with their length and the difference to the shortest one in meters,
+- all routes drawn on an OpenStreetMap (or CyclOSM) background; hover or click to highlight one,
+- a *Differences vs. #1* view that draws the shared part grey and only the differing sections in color,
+- GPX download per route or for all routes at once,
+- links that open the current map view on osm.org or in the iD editor.
+
+The street network for an area is downloaded once and cached in `graph_cache/`,
+so repeated queries in the same area take seconds instead of a minute or two.
+The server only listens on localhost and needs no extra dependencies beyond the ones above.
+
+### Command line
+
 1. Open `K7-router.py` in a text editor
 2. Edit the configuration variables at the top of `find_k_shortest_bike_routes()`:
    ```python
@@ -60,6 +81,7 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## Contributing
 
 Contributions welcome! Ideas for future development:
-- Web interface or CLI arguments for addresses
+- CLI arguments for addresses
+- A local criterion rejecting pointless micro-detours (e.g. through a petrol station, or around a pedestrian island via roundabout links)
 - Cost functions beyond pure distance (elevation, surface type, traffic)
 - Integration with BRouter profiles (see included `.brf` files)

@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# OSMnx HTTP response cache and cached street networks
+cache/
+graph_cache/
+
+# Generated routes
+route_*.gpx
+merged_routes.gpx
+k7_routes.gpx
