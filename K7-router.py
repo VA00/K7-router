@@ -24,8 +24,8 @@ def find_k_shortest_bike_routes():
     """
     # --- Configuration ---
     START_ADDRESS = "Urbańczyka 1, Chrzanów, Poland"
-    END_ADDRESS = "Krzywa 1, Płoki, Poland"
-    K_PATHS = 13  # The number of shortest paths to find
+    END_ADDRESS = "Krakowska 95, Libiąż, Poland"
+    K_PATHS = 7  # The number of shortest paths to find
     BUFFER_DISTANCE = 500  # Additional buffer in meters for safety
 
     # --- 1. Configure OSMnx ---
@@ -34,9 +34,11 @@ def find_k_shortest_bike_routes():
     # OSMnx 2.x uses ox.settings (no ox.config)
     ox.settings.use_cache = True
     ox.settings.log_console = True
-    ox.settings.timeout = 180
+    ox.settings.requests_timeout = 300  # osmnx 2.x: "timeout" was renamed to "requests_timeout"
     ox.settings.overpass_rate_limit = True
     ox.settings.request_retries = 3
+    ox.settings.http_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+    ox.settings.overpass_url = "https://gall.openstreetmap.de/api"
     
     # Set max query area size (use float for proper handling)
     ox.settings.max_query_area_size = 1e12  # 1 trillion m² (1 million km²)
