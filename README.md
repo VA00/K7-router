@@ -52,7 +52,14 @@ choose how many routes you want and press *Find routes*. You get:
 - all routes drawn on an OpenStreetMap (or CyclOSM) background; hover or click to highlight one,
 - a *Differences vs. #1* view that draws the shared part grey and only the differing sections in color,
 - GPX download per route or for all routes at once,
-- links that open the current map view on osm.org or in the iD editor.
+- links that open the current map view on osm.org or in the iD editor,
+- a local-optimality filter (*Max local stretch*): a candidate is rejected when, on any
+  section where it leaves an already accepted route, it is more than the given percentage
+  longer than the shortest connection of that section's end points (default 15 %). This
+  removes pointless micro-detours such as looping around a roundabout splitter island or
+  through a parking lot, while keeping genuinely parallel ways (cycle path vs. roadway,
+  which differ by about 1 %). Rejected candidates are listed separately and can be shown
+  on the map to calibrate the threshold; leave the field empty to disable the filter.
 
 The street network for an area is downloaded once and cached in `graph_cache/`,
 so repeated queries in the same area take seconds instead of a minute or two.

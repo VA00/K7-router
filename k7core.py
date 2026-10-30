@@ -94,16 +94,92 @@ def nearest_node(G: nx.MultiDiGraph, lat: float, lon: float) -> int:
     return ox.nearest_nodes(G, X=lon, Y=lat)
 
 
-def k_shortest_paths(G: nx.MultiDiGraph, orig: int, dest: int, k: int) -> list[list[int]]:
+def _diff_runs(path: list[int], reference: list[int]) -> list[list[int]]:
     """
-    Strictly ranked k shortest simple paths by OSM segment length.
+    Maximal runs of `path` whose edges are not in `reference`, as node lists.
+
+    Each run starts and ends on a node shared with the reference (or at the
+    path's own ends). Edges are compared undirected.
+    """
+    ref_edges = {frozenset((u, v)) for u, v in zip(reference[:-1], reference[1:])}
+    runs: list[list[int]] = []
+    run: list[int] = []
+    for u, v in zip(path[:-1], path[1:]):
+        if frozenset((u, v)) in ref_edges:
+            if run:
+                runs.append(run)
+                run = []
+        else:
+            if not run:
+                run = [u]
+            run.append(v)
+    if run:
+        runs.append(run)
+    return runs
+
+
+def local_stretch(G_simple: nx.DiGraph, path: list[int], reference: list[int]) -> float:
+    """
+    Worst local stretch of `path` relative to `reference`.
+
+    For every section where the path leaves the reference, divide the section's
+    length by the shortest-path distance between the section's end nodes. A
+    parallel way gives a ratio near 1; a detour around a splitter island or
+    through a parking lot gives 2-3. This is the "uniformly bounded stretch"
+    criterion of Abraham, Delling, Goldberg & Werneck (2010), evaluated only on
+    the windows where two routes differ.
+    """
+    worst = 1.0
+    for run in _diff_runs(path, reference):
+        section = sum(G_simple[u][v]["length"] for u, v in zip(run[:-1], run[1:]))
+        shortest = nx.dijkstra_path_length(G_simple, run[0], run[-1], weight="length")
+        if shortest > 0:
+            worst = max(worst, section / shortest)
+    return worst
+
+
+def k_shortest_paths(G: nx.MultiDiGraph, orig: int, dest: int, k: int,
+                     max_stretch: float | None = 0.15,
+                     max_candidates: int | None = None) -> dict:
+    """
+    Strictly ranked k shortest simple paths by OSM segment length, optionally
+    filtered for local optimality.
+
+    Candidates come from Yen's algorithm in order of increasing length. The
+    shortest one is always accepted. Every further candidate is compared with
+    each already accepted route: if on any differing section it is longer than
+    the shortest connection of that section's ends by more than `max_stretch`
+    (0.15 = 15 %), it is rejected as a pointless micro-detour. `max_stretch=None`
+    disables the filter. At most `max_candidates` candidates are examined
+    (default 10*k, at least 50) so a hopeless search terminates.
 
     The 'length' attribute is already in meters, so no projection is needed.
     Parallel edges are collapsed to the shortest one.
+
+    Returns a dict with 'accepted' (paths), 'rejected' (list of (path, stretch)),
+    'examined' (candidate count), 'exhausted' (True if the candidate limit was
+    hit before k routes were accepted) and 'graph' (the DiGraph used).
     """
     G_simple = ox.convert.to_digraph(G, weight="length")
     gen = nx.shortest_simple_paths(G_simple, source=orig, target=dest, weight="length")
-    return list(itertools.islice(gen, k))
+    limit = max_candidates or max(10 * k, 50)
+    accepted: list[list[int]] = []
+    rejected: list[tuple[list[int], float]] = []
+    examined = 0
+    for path in gen:
+        examined += 1
+        if max_stretch is None or not accepted:
+            accepted.append(path)
+        else:
+            stretch = max(local_stretch(G_simple, path, ref) for ref in accepted)
+            if stretch <= 1.0 + max_stretch:
+                accepted.append(path)
+            else:
+                rejected.append((path, stretch))
+        if len(accepted) >= k or examined >= limit:
+            break
+    return {"accepted": accepted, "rejected": rejected, "examined": examined,
+            "exhausted": len(accepted) < k, "graph": G_simple}
 
 
 def _best_edge(G: nx.MultiDiGraph, u: int, v: int) -> dict:
@@ -141,21 +217,7 @@ def diff_segments(G: nx.MultiDiGraph, path: list[int], base: list[int]) -> list[
     Edges are compared undirected, so riding the same street the other way is
     not counted as a difference.
     """
-    base_edges = {frozenset((u, v)) for u, v in zip(base[:-1], base[1:])}
-    segments: list[list[list[float]]] = []
-    run: list[int] = []
-    for u, v in zip(path[:-1], path[1:]):
-        if frozenset((u, v)) in base_edges:
-            if run:
-                segments.append(path_coords(G, run))
-                run = []
-        else:
-            if not run:
-                run = [u]
-            run.append(v)
-    if run:
-        segments.append(path_coords(G, run))
-    return segments
+    return [path_coords(G, run) for run in _diff_runs(path, base)]
 
 
 def build_gpx(tracks: list[tuple[str, list[list[float]]]]) -> str:
@@ -171,12 +233,28 @@ def build_gpx(tracks: list[tuple[str, list[list[float]]]]) -> str:
     return gpx.to_xml()
 
 
+def _describe_route(G: nx.MultiDiGraph, path: list[int], base: list[int], best_len: float,
+                    G_simple: nx.DiGraph) -> dict:
+    length = path_length(G, path)
+    is_base = path == base
+    return {
+        "length_m": round(length, 1),
+        "delta_m": round(length - best_len, 1),
+        "n_nodes": len(path),
+        "local_stretch": 1.0 if is_base else round(local_stretch(G_simple, path, base), 3),
+        "coords": path_coords(G, path),
+        "diff": [] if is_base else diff_segments(G, path, base),
+    }
+
+
 def find_routes(start_address: str, end_address: str, k: int = 7,
-                buffer_m: float = 500.0) -> dict:
+                buffer_m: float = 500.0, max_stretch: float | None = 0.15) -> dict:
     """
     Full pipeline: geocode, load network, rank routes, describe them for the UI.
 
-    Returns a JSON-serialisable dict.
+    `max_stretch` is the local-optimality threshold (0.15 = a differing section
+    may be at most 15 % longer than the shortest connection of its ends);
+    None disables the filter. Returns a JSON-serialisable dict.
     """
     timings: dict[str, float] = {}
 
@@ -198,29 +276,33 @@ def find_routes(start_address: str, end_address: str, k: int = 7,
 
     t = time.perf_counter()
     try:
-        paths = k_shortest_paths(G, orig, dest, k)
+        search = k_shortest_paths(G, orig, dest, k, max_stretch=max_stretch)
     except nx.NetworkXNoPath as exc:
         raise ValueError("No path between start and end in the bicycle network.") from exc
     timings["routing_s"] = round(time.perf_counter() - t, 2)
 
-    best_len = path_length(G, paths[0]) if paths else 0.0
+    paths = search["accepted"]
+    G_simple = search["graph"]
+    base = paths[0]
+    best_len = path_length(G, base)
+
     routes = []
     for i, path in enumerate(paths):
-        length = path_length(G, path)
-        routes.append({
-            "rank": i + 1,
-            "length_m": round(length, 1),
-            "delta_m": round(length - best_len, 1),
-            "n_nodes": len(path),
-            "coords": path_coords(G, path),
-            "diff": diff_segments(G, path, paths[0]) if i > 0 else [],
-        })
+        routes.append({"rank": i + 1, **_describe_route(G, path, base, best_len, G_simple)})
+
+    rejected = []
+    for j, (path, stretch) in enumerate(search["rejected"]):
+        rejected.append({"rank": j + 1, **_describe_route(G, path, base, best_len, G_simple),
+                         "rejected_stretch": round(stretch, 3)})
 
     return {
         "start": {"address": start_address, "lat": start[0], "lon": start[1], "node": int(orig)},
         "end": {"address": end_address, "lat": end[0], "lon": end[1], "node": int(dest)},
         "area": {"center": list(center), "radius_m": round(radius), "cached": cached,
                  "nodes": G.number_of_nodes(), "edges": G.number_of_edges()},
+        "filter": {"max_stretch": max_stretch, "examined": search["examined"],
+                   "rejected": len(rejected), "exhausted": search["exhausted"]},
         "routes": routes,
+        "rejected": rejected,
         "timings": timings,
     }

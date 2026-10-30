@@ -44,6 +44,15 @@
   .modes { padding: 0 16px 8px; display: flex; gap: 12px; font-size: 12px; }
   .modes label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
   #routes { flex: 1; overflow-y: auto; border-top: 1px solid var(--border); }
+  #rejected { flex: 0 0 auto; max-height: 40%; overflow-y: auto; border-top: 1px solid var(--border); }
+  #rejected summary { padding: 8px 16px; font-size: 12px; font-weight: 600; color: var(--muted);
+                      text-transform: uppercase; letter-spacing: .03em; cursor: pointer; list-style: none; }
+  #rejected summary::before { content: '▸ '; }
+  #rejected details[open] summary::before { content: '▾ '; }
+  #rejected .route { opacity: .8; }
+  #rejected .swatch { background: repeating-linear-gradient(45deg, var(--muted) 0 3px, transparent 3px 6px); }
+  .route .stretch { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .route .stretch.bad { color: #c0392b; }
   .route { display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: center;
            padding: 8px 16px; border-bottom: 1px solid var(--border); cursor: pointer; }
   .route:hover, .route.hover { background: var(--hover); }
@@ -85,6 +94,9 @@
     <label>Buffer (m)
       <input id="buffer" name="buffer" type="number" min="0" max="5000" step="100" value="500">
     </label>
+    <label class="full" title="A differing section may be at most this much longer than the shortest connection of its end points. Empty = no filter.">Max local stretch (%)
+      <input id="stretch" name="stretch" type="number" min="0" max="1000" step="5" value="15" placeholder="off">
+    </label>
     <button id="go" type="submit">Find routes</button>
   </form>
   <div id="status">Enter two addresses and press Find routes.</div>
@@ -93,6 +105,7 @@
     <label><input type="radio" name="mode" value="diff"> Differences vs. #1</label>
   </div>
   <div id="routes"></div>
+  <div id="rejected"></div>
   <footer>
     <a id="gpx-all" href="/api/gpx/all" hidden>Download all as GPX</a>
     <a id="osm-link" href="https://www.openstreetmap.org" target="_blank" rel="noopener">View area on osm.org</a>
@@ -129,19 +142,32 @@
   var form = document.getElementById('form');
   var statusEl = document.getElementById('status');
   var routesEl = document.getElementById('routes');
+  var rejectedEl = document.getElementById('rejected');
   var goBtn = document.getElementById('go');
   var gpxAll = document.getElementById('gpx-all');
 
   var result = null;        // last API response
-  var lines = {};           // rank -> array of L.Polyline (main line + diff segments)
-  var hidden = {};          // rank -> true if hidden by checkbox
-  var selected = null;      // selected rank
-  var hovered = null;       // hovered rank
+  var lines = {};           // key -> array of L.Polyline (main line + diff segments)
+  var hidden = {};          // key -> true if hidden by checkbox
+  var selected = null;      // selected key
+  var hovered = null;       // hovered key
+  // Accepted routes are keyed by their rank (1, 2, ...); rejected candidates by 'r1', 'r2', ...
+  // so both kinds share the same hover/select/visibility machinery.
+  var REJECTED_COLOR = '#374151';
+
+  function routeByKey(key) {
+    return (typeof key === 'string' && key.charAt(0) === 'r')
+      ? result.rejected[parseInt(key.slice(1), 10) - 1]
+      : result.routes[key - 1];
+  }
+  function isRejectedKey(key) { return typeof key === 'string' && key.charAt(0) === 'r'; }
+  function colorFor(key) { return isRejectedKey(key) ? REJECTED_COLOR : COLORS[(key - 1) % COLORS.length]; }
+  function labelFor(key) { return isRejectedKey(key) ? 'Rejected ' + key.slice(1) : 'Route ' + key; }
 
   // --- persistence of form values (per-browser convenience only) --------------
   try {
     var saved = JSON.parse(localStorage.getItem('k7.form') || 'null');
-    if (saved) ['start', 'end', 'k', 'buffer'].forEach(function (id) {
+    if (saved) ['start', 'end', 'k', 'buffer', 'stretch'].forEach(function (id) {
       if (saved[id] !== undefined) document.getElementById(id).value = saved[id];
     });
   } catch (e) { /* storage unavailable: ignore */ }
@@ -149,7 +175,7 @@
   function saveForm() {
     try {
       localStorage.setItem('k7.form', JSON.stringify({
-        start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer')
+        start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer'), stretch: val('stretch')
       }));
     } catch (e) { /* ignore */ }
   }
@@ -172,14 +198,37 @@
   function fmtKm(m) { return (m / 1000).toFixed(3) + ' km'; }
   function fmtDelta(m) { return (m >= 0 ? '+' : '') + Math.round(m) + ' m'; }
 
-  function styleFor(rank, isDiff) {
+  function styleFor(key, isDiff) {
     var focus = hovered !== null ? hovered : selected;
-    var dim = focus !== null && focus !== rank;
-    var color = COLORS[(rank - 1) % COLORS.length];
+    var dim = focus !== null && focus !== key;
+    var rejected = isRejectedKey(key);
+    var dash = rejected ? '8 8' : null;
     if (mode() === 'diff' && !isDiff) {
-      return { color: SHARED_COLOR, weight: focus === rank ? 6 : 4, opacity: dim ? 0.25 : 0.7 };
+      return { color: SHARED_COLOR, weight: focus === key ? 6 : 4, opacity: dim ? 0.25 : 0.7, dashArray: dash };
     }
-    return { color: color, weight: focus === rank ? 8 : 4, opacity: dim ? 0.25 : 0.9 };
+    return { color: colorFor(key), weight: focus === key ? 8 : 4, opacity: dim ? 0.25 : 0.9, dashArray: dash };
+  }
+
+  function drawOne(key, r, m) {
+    var group = [];
+    if (m === 'all' || key === 1) {
+      // in "diff" mode route #1 is the colored baseline; the others are grey except where they differ
+      group.push(L.polyline(r.coords, styleFor(key, true)));
+    } else {
+      // shared skeleton (thin grey) + colored differences
+      group.push(L.polyline(r.coords, styleFor(key, false)));
+      r.diff.forEach(function (seg) { group.push(L.polyline(seg, styleFor(key, true))); });
+    }
+    var tip = labelFor(key) + ' · ' + fmtKm(r.length_m) + (key !== 1 ? ' (' + fmtDelta(r.delta_m) + ')' : '') +
+              (isRejectedKey(key) ? ' · stretch ×' + r.rejected_stretch.toFixed(2) : '');
+    group.forEach(function (pl) {
+      pl.on('mouseover', function () { setHover(key); });
+      pl.on('mouseout', function () { setHover(null); });
+      pl.on('click', function () { select(key, false); });
+      pl.bindTooltip(tip, { sticky: true });
+      pl.addTo(routeLayer);
+    });
+    lines[key] = group;
   }
 
   function draw() {
@@ -187,94 +236,97 @@
     lines = {};
     if (!result) return;
     var m = mode();
-    // Draw worst-ranked first so the best route ends up on top.
-    result.routes.slice().reverse().forEach(function (r) {
-      if (hidden[r.rank]) return;
-      var group = [];
-      if (m === 'all' || r.rank === 1) {
-        // in "diff" mode route #1 is the colored baseline; the others are grey except where they differ
-        group.push(L.polyline(r.coords, styleFor(r.rank, true)));
-      } else {
-        // shared skeleton (thin grey) + colored differences
-        group.push(L.polyline(r.coords, styleFor(r.rank, false)));
-        r.diff.forEach(function (seg) { group.push(L.polyline(seg, styleFor(r.rank, true))); });
-      }
-      group.forEach(function (pl) {
-        pl.on('mouseover', function () { setHover(r.rank); });
-        pl.on('mouseout', function () { setHover(null); });
-        pl.on('click', function () { select(r.rank, false); });
-        pl.bindTooltip('#' + r.rank + ' · ' + fmtKm(r.length_m) + (r.rank > 1 ? ' (' + fmtDelta(r.delta_m) + ')' : ''),
-                       { sticky: true });
-        pl.addTo(routeLayer);
-      });
-      lines[r.rank] = group;
+    // Rejected candidates at the bottom, then accepted routes worst-first so the best route ends up on top.
+    result.rejected.slice().reverse().forEach(function (r) {
+      var key = 'r' + r.rank;
+      if (!hidden[key]) drawOne(key, r, m);
     });
-    // focused route on top
+    result.routes.slice().reverse().forEach(function (r) {
+      if (!hidden[r.rank]) drawOne(r.rank, r, m);
+    });
+    bringFocusToFront();
+  }
+
+  function bringFocusToFront() {
     var focus = hovered !== null ? hovered : selected;
     if (focus !== null && lines[focus]) lines[focus].forEach(function (pl) { pl.bringToFront(); });
   }
 
   function restyle() {
-    Object.keys(lines).forEach(function (rank) {
-      rank = +rank;
-      lines[rank].forEach(function (pl, i) {
+    Object.keys(lines).forEach(function (k) {
+      var key = isRejectedKey(k) ? k : +k;
+      lines[k].forEach(function (pl, i) {
         // index 0 is the full route line; indexes >0 are the differing sections (diff mode only)
-        var isDiff = mode() === 'all' || rank === 1 || i > 0;
-        pl.setStyle(styleFor(rank, isDiff));
+        var isDiff = mode() === 'all' || key === 1 || i > 0;
+        pl.setStyle(styleFor(key, isDiff));
       });
     });
-    var focus = hovered !== null ? hovered : selected;
-    if (focus !== null && lines[focus]) lines[focus].forEach(function (pl) { pl.bringToFront(); });
+    bringFocusToFront();
   }
 
-  function setHover(rank) {
-    hovered = rank;
-    routesEl.querySelectorAll('.route').forEach(function (el) {
-      el.classList.toggle('hover', +el.dataset.rank === rank);
-    });
+  function allItems() { return document.querySelectorAll('#routes .route, #rejected .route'); }
+  function keyOf(el) { return isRejectedKey(el.dataset.key) ? el.dataset.key : +el.dataset.key; }
+
+  function setHover(key) {
+    hovered = key;
+    allItems().forEach(function (el) { el.classList.toggle('hover', keyOf(el) === key); });
     restyle();
   }
 
-  function select(rank, zoom) {
-    selected = (selected === rank) ? null : rank;
-    routesEl.querySelectorAll('.route').forEach(function (el) {
-      el.classList.toggle('selected', +el.dataset.rank === selected);
-    });
+  function select(key, zoom) {
+    selected = (selected === key) ? null : key;
+    allItems().forEach(function (el) { el.classList.toggle('selected', keyOf(el) === selected); });
     restyle();
     if (selected !== null && zoom) {
-      var r = result.routes[selected - 1];
-      var target = (r.rank > 1 && r.diff.length) ? L.polyline(r.diff) : L.polyline(r.coords);
+      var r = routeByKey(selected);
+      var target = (selected !== 1 && r.diff.length) ? L.polyline(r.diff) : L.polyline(r.coords);
       map.fitBounds(target.getBounds(), { padding: [40, 40], maxZoom: 17 });
     }
   }
 
+  function itemFor(key, r) {
+    var rejected = isRejectedKey(key);
+    var el = document.createElement('div');
+    el.className = 'route';
+    el.dataset.key = key;
+    var sub = key === 1 ? 'shortest'
+            : r.diff.length + ' differing section' + (r.diff.length === 1 ? '' : 's');
+    var stretch = rejected
+      ? '<span class="stretch bad">stretch ×' + r.rejected_stretch.toFixed(2) + '</span>'
+      : (key === 1 ? '' : '<span class="stretch">stretch ×' + r.local_stretch.toFixed(2) + '</span>');
+    el.innerHTML =
+      '<div class="swatch" style="' + (rejected ? '' : 'background:' + colorFor(key)) + '"></div>' +
+      '<div class="main"><div class="title">' + labelFor(key) + ' · ' + fmtKm(r.length_m) + '</div>' +
+      '<div class="sub">' + sub + ' · ' + r.n_nodes + ' nodes' + (stretch ? ' · ' + stretch : '') + '</div></div>' +
+      '<div class="delta' + (key === 1 ? ' zero' : '') + '">' + (key === 1 ? '—' : fmtDelta(r.delta_m)) + '</div>' +
+      '<div class="actions"><label><input type="checkbox" ' + (hidden[key] ? '' : 'checked') + '> show</label>' +
+      (rejected ? '' : '<a href="/api/gpx/' + key + '">GPX</a>') + '</div>';
+    el.addEventListener('mouseenter', function () { setHover(key); });
+    el.addEventListener('mouseleave', function () { setHover(null); });
+    el.addEventListener('click', function (ev) {
+      if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'A' || ev.target.tagName === 'LABEL') return;
+      select(key, true);
+    });
+    el.querySelector('input[type=checkbox]').addEventListener('change', function (ev) {
+      hidden[key] = !ev.target.checked;
+      draw();
+    });
+    return el;
+  }
+
   function renderList() {
     routesEl.innerHTML = '';
-    result.routes.forEach(function (r) {
-      var el = document.createElement('div');
-      el.className = 'route';
-      el.dataset.rank = r.rank;
-      var diffLen = r.diff.reduce(function (n, seg) { return n + seg.length; }, 0);
-      el.innerHTML =
-        '<div class="swatch" style="background:' + COLORS[(r.rank - 1) % COLORS.length] + '"></div>' +
-        '<div class="main"><div class="title">Route ' + r.rank + ' · ' + fmtKm(r.length_m) + '</div>' +
-        '<div class="sub">' + (r.rank === 1 ? 'shortest' : r.diff.length + ' differing section' + (r.diff.length === 1 ? '' : 's')) +
-        ' · ' + r.n_nodes + ' nodes</div></div>' +
-        '<div class="delta' + (r.rank === 1 ? ' zero' : '') + '">' + (r.rank === 1 ? '—' : fmtDelta(r.delta_m)) + '</div>' +
-        '<div class="actions"><label><input type="checkbox" ' + (hidden[r.rank] ? '' : 'checked') + '> show</label>' +
-        '<a href="/api/gpx/' + r.rank + '">GPX</a></div>';
-      el.addEventListener('mouseenter', function () { setHover(r.rank); });
-      el.addEventListener('mouseleave', function () { setHover(null); });
-      el.addEventListener('click', function (ev) {
-        if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'A' || ev.target.tagName === 'LABEL') return;
-        select(r.rank, true);
-      });
-      el.querySelector('input[type=checkbox]').addEventListener('change', function (ev) {
-        hidden[r.rank] = !ev.target.checked;
-        draw();
-      });
-      routesEl.appendChild(el);
-    });
+    result.routes.forEach(function (r) { routesEl.appendChild(itemFor(r.rank, r)); });
+    rejectedEl.innerHTML = '';
+    if (result.rejected.length) {
+      // collapsed by default so the accepted routes keep the room; open it to inspect / show candidates
+      var details = document.createElement('details');
+      var summary = document.createElement('summary');
+      summary.textContent = 'Rejected candidates (' + result.rejected.length + ')';
+      details.appendChild(summary);
+      result.rejected.forEach(function (r) { details.appendChild(itemFor('r' + r.rank, r)); });
+      rejectedEl.appendChild(details);
+    }
   }
 
   function renderMarkers() {
@@ -287,7 +339,8 @@
   form.addEventListener('submit', function (ev) {
     ev.preventDefault();
     saveForm();
-    var params = new URLSearchParams({ start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer') });
+    var params = new URLSearchParams({ start: val('start'), end: val('end'), k: val('k'), buffer: val('buffer'),
+                                       stretch: val('stretch') });
     goBtn.disabled = true;
     statusEl.className = '';
     statusEl.textContent = 'Geocoding and loading the bicycle network… first run for a new area can take a minute.';
@@ -302,9 +355,16 @@
         }
         result = r.data;
         hidden = {}; selected = null; hovered = null;
-        var a = result.area, t = result.timings;
+        // rejected candidates stay off the map until the user ticks them
+        result.rejected.forEach(function (x) { hidden['r' + x.rank] = true; });
+        var a = result.area, t = result.timings, f = result.filter;
+        var filterLine = f.max_stretch === null
+          ? 'filter off · ' + f.examined + ' candidates'
+          : 'filter ≤ ' + Math.round(f.max_stretch * 100) + ' % · ' + f.examined + ' candidates examined, ' +
+            f.rejected + ' rejected' + (f.exhausted ? ' · candidate limit reached' : '');
         statusEl.textContent = result.routes.length + ' routes · network ' + a.nodes + ' nodes / ' + a.edges + ' edges' +
           (a.cached ? ' (cached)' : ' (downloaded)') +
+          '\n' + filterLine +
           '\ngeocode ' + t.geocode_s + ' s · graph ' + t.graph_s + ' s · routing ' + t.routing_s + ' s';
         gpxAll.hidden = false;
         renderMarkers();

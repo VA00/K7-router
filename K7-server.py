@@ -59,7 +59,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        query = {k: v[0] for k, v in parse_qs(url.query).items()}
+        # keep blank values so that e.g. "stretch=" (filter off) reaches the handler
+        query = {k: v[0] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         path = url.path
 
         if path == "/" or path == "/index.html":
@@ -93,10 +94,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             k = max(1, min(MAX_K, int(q.get("k", 7))))
             buffer_m = max(0.0, min(5000.0, float(q.get("buffer", 500))))
+            # local-optimality threshold in percent; empty/"off" disables the filter
+            stretch_raw = (q.get("stretch", "15") or "").strip().lower()
+            max_stretch = None if stretch_raw in ("", "off", "none") else max(0.0, float(stretch_raw)) / 100.0
         except ValueError:
-            return self._error(400, "'k' must be an integer and 'buffer' a number.")
+            return self._error(400, "'k' must be an integer, 'buffer' and 'stretch' numbers.")
         try:
-            result = k7core.find_routes(start, end, k=k, buffer_m=buffer_m)
+            result = k7core.find_routes(start, end, k=k, buffer_m=buffer_m, max_stretch=max_stretch)
         except ValueError as exc:
             return self._error(422, str(exc))
         except Exception as exc:  # network errors, Overpass errors, ...
