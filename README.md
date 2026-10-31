@@ -24,6 +24,39 @@ I found a surprising alternative on a route I've used for more than a decade. It
 
 So far, the code has been tested on short routes up to 10 km in not very dense areas. For now, only the length of OSM road segments is used to find routes.
 
+### Pointless detours and the local-optimality filter
+
+Plain k-shortest-paths (Yen's algorithm) treats any legal path as an alternative, including
+leaving the optimal route only to loop around a roundabout splitter island via its one-way
+legs, or to cut through a petrol station forecourt or a parking lot. Those variants are
+filtered out with a *local optimality* criterion (the "uniformly bounded stretch" of Abraham,
+Delling, Goldberg & Werneck, 2010): on every section where a candidate leaves an already
+accepted route, it may be longer than the shortest connection of that section's end points by
+at most a configurable percentage (default 15 %). Measured on real cases, a cycle path running
+parallel to the roadway stretches by about 1 %, while roundabout and parking-lot detours
+stretch by 160 % to 700 %, so the threshold has a wide safe range. Genuinely parallel ways,
+even 1 m apart, are kept — they are exactly the alternatives this tool is about.
+
+### Known limitation: routes are combinations of local choices
+
+A commute route typically contains a few *independent* places where you can choose, e.g.
+roadway vs. cycle path here, clockwise vs. counterclockwise around a roundabout there. Ranking
+whole routes by length then produces every *combination* of those choices: with local
+alternatives costing +2.8 m and +18 m you get routes at +2.8, +18 and +20.8 m, and the third
+one tells you nothing new. In practice a list of 7 routes often carries only 3 or 4 distinct
+decisions, while the next genuinely different alternative does not make the cut. The human
+brain classifies such combinations as "the same route" automatically; the algorithm does not.
+
+Note that this is not a matter of identical lengths: edge lengths are full-precision great-circle
+distances, exact ties practically never occur, and Yen never returns the same path twice. The
+routes are distinct — they are just not independent.
+
+The planned remedy is to rank *local alternatives* instead of full routes: extract the unique
+differing sections (entry node, exit node, nodes in between) from a long list of Yen candidates,
+rank them by their own local extra length, and let the user compose a route from independent
+choices. In that view, the 7th route of K7-router is the 7th local decision, not the 7th
+combination of six known ones.
+
 ## Requirements
 
 - Python 3.8+
@@ -103,6 +136,6 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 Contributions welcome! Ideas for future development:
 - CLI arguments for addresses
-- A local criterion rejecting pointless micro-detours (e.g. through a petrol station, or around a pedestrian island via roundabout links)
+- Ranking independent local alternatives instead of full-route combinations (see the known limitation above)
 - Cost functions beyond pure distance (elevation, surface type, traffic)
 - Integration with BRouter profiles (see included `.brf` files)
