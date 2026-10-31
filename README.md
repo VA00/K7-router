@@ -34,8 +34,22 @@ So far, the code has been tested on short routes up to 10 km in not very dense a
 ## Installation
 
 ```bash
-pip install osmnx networkx gpxpy
+pip install osmnx networkx gpxpy osmium
 ```
+
+### Map data
+
+By default the router builds its street network from a **local OpenStreetMap extract**:
+download the `*.osm.pbf` file of your region, e.g. from
+[download.geofabrik.de](https://download.geofabrik.de/) or
+[download.openstreetmap.fr/extracts](https://download.openstreetmap.fr/extracts/), and put it
+next to the scripts (or pass `--pbf FILE` to the server). Extracts are updated daily, a
+voivodeship is a few hundred MB, and routing then needs no network access at all. Reading
+the extract requires the `osmium` package (pyosmium).
+
+Without a PBF file the network is downloaded from the public Overpass API instead. That
+works, but the public servers are often at capacity and reject automated clients, so the
+local file is strongly recommended.
 
 ## Usage
 
@@ -61,8 +75,8 @@ choose how many routes you want and press *Find routes*. You get:
   which differ by about 1 %). Rejected candidates are listed separately and can be shown
   on the map to calibrate the threshold; leave the field empty to disable the filter.
 
-The street network for an area is downloaded once and cached in `graph_cache/`,
-so repeated queries in the same area take seconds instead of a minute or two.
+The street network for an area is built once (from the local extract, or downloaded from
+Overpass) and cached in `graph_cache/`, so repeated queries in the same area take seconds.
 The server only listens on localhost and needs no extra dependencies beyond the ones above.
 
 ### Command line

@@ -6,6 +6,9 @@ __pycache__/
 cache/
 graph_cache/
 
+# Local OpenStreetMap extracts (data source for the router)
+*.pbf
+
 # Generated routes
 route_*.gpx
 merged_routes.gpx

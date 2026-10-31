@@ -136,9 +136,18 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8707)
     parser.add_argument("--verbose", action="store_true", help="print OSMnx log to console")
+    parser.add_argument("--pbf", metavar="FILE",
+                        help="OSM extract (*.osm.pbf) to build networks from; default: first *.pbf "
+                             "next to the scripts, or Overpass if there is none")
     args = parser.parse_args()
 
     k7core.configure(log_console=args.verbose)
+    if args.pbf:
+        if not os.path.isfile(args.pbf):
+            sys.exit(f"PBF file not found: {args.pbf}")
+        k7core.set_pbf_path(args.pbf)
+    pbf = k7core.pbf_path()
+    print(f"Data source: {pbf if pbf else 'Overpass (no *.pbf file found)'}")
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"K7-router UI: http://{args.host}:{args.port}  (Ctrl+C to stop)")
     try:

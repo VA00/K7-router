@@ -362,8 +362,9 @@
           ? 'filter off · ' + f.examined + ' candidates'
           : 'filter ≤ ' + Math.round(f.max_stretch * 100) + ' % · ' + f.examined + ' candidates examined, ' +
             f.rejected + ' rejected' + (f.exhausted ? ' · candidate limit reached' : '');
+        var sourceText = (a.source === 'pbf' ? 'from ' + a.pbf : 'from Overpass') + (a.cached ? ', cached' : '');
         statusEl.textContent = result.routes.length + ' routes · network ' + a.nodes + ' nodes / ' + a.edges + ' edges' +
-          (a.cached ? ' (cached)' : ' (downloaded)') +
+          ' (' + sourceText + ')' +
           '\n' + filterLine +
           '\ngeocode ' + t.geocode_s + ' s · graph ' + t.graph_s + ' s · routing ' + t.routing_s + ' s';
         gpxAll.hidden = false;

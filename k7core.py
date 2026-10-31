@@ -9,9 +9,11 @@ route geometry, route differences and GPX export.
 from __future__ import annotations
 
 import functools
+import glob
 import itertools
 import math
 import os
+import re
 import time
 
 import gpxpy
@@ -21,6 +23,18 @@ import osmnx as ox
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 GRAPH_CACHE_DIR = os.path.join(BASE_DIR, "graph_cache")
+
+# Local OSM extract (*.osm.pbf, e.g. from download.geofabrik.de or
+# download.openstreetmap.fr/extracts). When present, the street network is
+# built from it instead of being downloaded from Overpass. Set explicitly with
+# set_pbf_path(); by default the first *.pbf file next to this module is used.
+PBF_PATH: str | None = None
+
+# The same filter OSMnx sends to Overpass for network_type="bike", applied
+# locally when reading the PBF extract.
+_EXCLUDED_HIGHWAY = re.compile(
+    r"abandoned|bus_guideway|construction|corridor|elevator|escalator|footway|motor|no|planned"
+    r"|platform|proposed|raceway|razed|rest_area|services|steps")
 
 # Same Overpass server / user agent as chosen in K7-router.py.
 OVERPASS_URL = "https://gall.openstreetmap.de/api"
@@ -69,25 +83,114 @@ def search_area(start: tuple[float, float], end: tuple[float, float],
     return center, radius
 
 
-def _cache_path(center: tuple[float, float], radius_m: float) -> str:
+def set_pbf_path(path: str | None) -> None:
+    """Use this PBF extract as the data source (None = auto-detect / Overpass)."""
+    global PBF_PATH
+    PBF_PATH = path
+
+
+def pbf_path() -> str | None:
+    """The PBF extract to use, or None if there is none (then Overpass is used)."""
+    if PBF_PATH:
+        return PBF_PATH if os.path.isfile(PBF_PATH) else None
+    found = sorted(glob.glob(os.path.join(BASE_DIR, "*.pbf")))
+    return found[0] if found else None
+
+
+def _bike_way_ok(tags: dict) -> bool:
+    hw = tags.get("highway")
+    if not hw or _EXCLUDED_HIGHWAY.search(hw):
+        return False
+    if "yes" in (tags.get("area") or "") or "private" in (tags.get("access") or ""):
+        return False
+    if "no" in (tags.get("bicycle") or "") or "private" in (tags.get("service") or ""):
+        return False
+    return True
+
+
+def graph_from_pbf(pbf: str, center: tuple[float, float], radius_m: float) -> nx.MultiDiGraph:
+    """
+    Bicycle network around `center` built from a local PBF extract.
+
+    Two passes over the file with pyosmium: first the highway ways passing the
+    bike filter that touch the bounding box of the search circle, then the
+    nodes they use. The result is written as OSM XML next to the graph cache
+    and loaded with OSMnx exactly like an Overpass response. The area is the
+    bounding square of the circle, so it is slightly larger than what Overpass
+    would return for the same radius.
+    """
+    import osmium  # optional dependency: pip install osmium
+
+    lat, lon = center
+    dlat = radius_m / 111320.0
+    dlon = radius_m / (111320.0 * math.cos(math.radians(lat)))
+    south, north, west, east = lat - dlat, lat + dlat, lon - dlon, lon + dlon
+
+    ways: list[tuple[int, list[int], dict]] = []
+    node_ids: set[int] = set()
+    fp = (osmium.FileProcessor(pbf, osmium.osm.NODE | osmium.osm.WAY)
+          .with_locations()
+          .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
+          .with_filter(osmium.filter.KeyFilter("highway")))
+    for w in fp:
+        tags = dict(w.tags)
+        if not _bike_way_ok(tags):
+            continue
+        if not any(n.location.valid() and south <= n.location.lat <= north and west <= n.location.lon <= east
+                   for n in w.nodes):
+            continue
+        refs = [n.ref for n in w.nodes]
+        ways.append((w.id, refs, tags))
+        node_ids.update(refs)
+
+    os.makedirs(GRAPH_CACHE_DIR, exist_ok=True)
+    xml_path = os.path.join(GRAPH_CACHE_DIR, f"extract_{os.getpid()}.osm")
+    writer = osmium.SimpleWriter(xml_path, overwrite=True)
+    try:
+        for n in osmium.FileProcessor(pbf, osmium.osm.NODE).with_filter(osmium.filter.IdFilter(node_ids)):
+            writer.add_node(n)
+        for wid, refs, tags in ways:
+            writer.add_way(osmium.osm.mutable.Way(id=wid, nodes=refs, tags=tags, version=1))
+        writer.close()
+        return ox.graph_from_xml(xml_path, simplify=True, retain_all=False)
+    finally:
+        try:
+            os.remove(xml_path)
+        except OSError:
+            pass
+
+
+def _cache_path(center: tuple[float, float], radius_m: float, source: str) -> str:
     # Round so that tiny differences in geocoding still hit the same cached graph.
+    # The PBF file's modification time is part of the key, so a fresh download
+    # invalidates graphs built from the old one.
     key = f"{center[0]:.3f}_{center[1]:.3f}_{int(math.ceil(radius_m / 250.0)) * 250}"
-    return os.path.join(GRAPH_CACHE_DIR, f"bike_{key}.graphml")
+    return os.path.join(GRAPH_CACHE_DIR, f"bike_{source}_{key}.graphml")
 
 
-def load_graph(center: tuple[float, float], radius_m: float) -> tuple[nx.MultiDiGraph, bool]:
+def load_graph(center: tuple[float, float], radius_m: float) -> tuple[nx.MultiDiGraph, bool, str]:
     """
     Return the bicycle network around `center`, from the on-disk cache if available.
 
-    The second element tells whether the graph came from the cache.
+    Built from the local PBF extract when one is configured or found (see
+    pbf_path()), otherwise downloaded from Overpass. Returns (graph, cached,
+    source) where source is "pbf" or "overpass".
     """
-    path = _cache_path(center, radius_m)
+    pbf = pbf_path()
+    if pbf:
+        source = f"pbf{int(os.path.getmtime(pbf))}"
+    else:
+        source = "overpass"
+    path = _cache_path(center, radius_m, source)
     if os.path.exists(path):
-        return ox.load_graphml(path), True
-    G = ox.graph_from_point(center_point=center, dist=radius_m, network_type="bike", simplify=True)
+        return ox.load_graphml(path), True, ("pbf" if pbf else "overpass")
+    if pbf:
+        G = graph_from_pbf(pbf, center, radius_m)
+    else:
+        G = ox.graph_from_point(center_point=center, dist=radius_m, network_type="bike", simplify=True)
     os.makedirs(GRAPH_CACHE_DIR, exist_ok=True)
     ox.save_graphml(G, path)
-    return G, False
+    return G, False, ("pbf" if pbf else "overpass")
 
 
 def nearest_node(G: nx.MultiDiGraph, lat: float, lon: float) -> int:
@@ -235,11 +338,11 @@ def build_gpx(tracks: list[tuple[str, list[list[float]]]]) -> str:
 
 def _describe_route(G: nx.MultiDiGraph, path: list[int], base: list[int], best_len: float,
                     G_simple: nx.DiGraph) -> dict:
-    length = path_length(G, path)
+    length = float(path_length(G, path))  # plain float: graphs read from XML carry numpy scalars
     is_base = path == base
     return {
         "length_m": round(length, 1),
-        "delta_m": round(length - best_len, 1),
+        "delta_m": round(length - float(best_len), 1),
         "n_nodes": len(path),
         "local_stretch": 1.0 if is_base else round(local_stretch(G_simple, path, base), 3),
         "coords": path_coords(G, path),
@@ -266,7 +369,7 @@ def find_routes(start_address: str, end_address: str, k: int = 7,
     center, radius = search_area(start, end, buffer_m)
 
     t = time.perf_counter()
-    G, cached = load_graph(center, radius)
+    G, cached, source = load_graph(center, radius)
     timings["graph_s"] = round(time.perf_counter() - t, 2)
 
     orig = nearest_node(G, *start)
@@ -298,7 +401,8 @@ def find_routes(start_address: str, end_address: str, k: int = 7,
     return {
         "start": {"address": start_address, "lat": start[0], "lon": start[1], "node": int(orig)},
         "end": {"address": end_address, "lat": end[0], "lon": end[1], "node": int(dest)},
-        "area": {"center": list(center), "radius_m": round(radius), "cached": cached,
+        "area": {"center": list(center), "radius_m": round(radius), "cached": cached, "source": source,
+                 "pbf": os.path.basename(pbf_path()) if source == "pbf" else None,
                  "nodes": G.number_of_nodes(), "edges": G.number_of_edges()},
         "filter": {"max_stretch": max_stretch, "examined": search["examined"],
                    "rejected": len(rejected), "exhausted": search["exhausted"]},
